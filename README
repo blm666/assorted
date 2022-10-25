@@ -7,3 +7,345 @@ Project information:
 * Python scripts are released under Apache License (APL) version 2
 * Documentation is released under GNU Free Documentation License (GFDL) version 1.3
 
+
+
+package com.example;
+
+import java.nio.charset.StandardCharsets;
+import java.util.zip.Deflater;
+import java.util.zip.Inflater;
+//https://www.rfc-editor.org/rfc/rfc1950
+//https://www.ietf.org/rfc/rfc1951.txt
+DeflateStudy
+public class Main {
+    static void l(String msg) {
+        System.out.println(msg);
+    }
+
+    static class MyInflater {
+        final byte[] compressedData;
+        final byte[] output;
+
+        MyInflater(byte[] compressedData, byte[] output) {
+            this.compressedData = compressedData;
+            this.output = output;
+        }
+
+        int byteIdx, bitIdx;
+        int outputIdx;
+
+        void backBits(int cnt) {
+            for (int i = 0; i < cnt; i++) {
+                bitIdx--;
+                if (bitIdx < 0) {
+                    byteIdx--;
+                    bitIdx = 7;
+                }
+            }
+        }
+
+        int readOneBit() {
+            int ret = compressedData[byteIdx] & (0x1 << bitIdx);
+            bitIdx++;
+            if (bitIdx == 8) {
+                bitIdx = 0;
+                byteIdx++;
+            }
+            return ret == 0 ? 0 : 1;
+        }
+
+        int readBits(int bitCnt, boolean isLeastSignificantBitFirst) {
+            if (bitCnt > 32) {
+                throw new RuntimeException("bitCnt is too large:" + bitCnt);
+            }
+            int ret = 0;
+            for (int i = 0; i < bitCnt; i++) {
+                int nextBit = 0;
+                if (readOneBit() != 0) {
+                    nextBit = 1;
+                }
+                if (isLeastSignificantBitFirst) {
+                    ret |= (nextBit << i);
+                } else {
+                    ret |= (nextBit << (bitCnt - i - 1));
+                }
+            }
+            return ret;
+        }
+
+        int inflate() {
+            byteIdx = 0;
+            bitIdx = 0;
+            outputIdx = 0;
+            byte CMF = compressedData[byteIdx++];
+            byte CM = (byte) (CMF & 0xf);
+            boolean isDeflate = (CM == 8);
+            int deflateWindowSize = -1;
+            l("CM=" + CM + (isDeflate ? "(deflate)" : ""));
+            if (isDeflate) {
+                byte CINFO = (byte) ((CMF >> 4) & 0xf);
+                l("CINFO=" + CINFO);
+                deflateWindowSize = 1;
+                for (int i = 0; i < CINFO + 8; i++) {
+                    deflateWindowSize *= 2;
+                }
+                l("deflate window size=" + deflateWindowSize);
+            }
+
+            byte FLG = compressedData[byteIdx++];
+            byte FDICT = (byte) ((FLG >> 5) & 0x1);
+            l("FDICT=" + FDICT);
+            byte FLEVEL = (byte) ((FLG >> 6) & 0x3);
+            l("FLEVEL=" + FLEVEL);
+            if (FDICT != 0) {
+                //TODO
+                throw new RuntimeException("FDICT not supported!");
+            }
+
+            int BFINAL;
+            int BTYPE;
+            do {
+                BFINAL = readOneBit();
+                BTYPE = readBits(2, true);
+                if (BTYPE == 0) {
+                    handleOneUncompressedBlock();
+                } else if (BTYPE == 1) {
+                    handleOneFixedHuffmanBlock();
+                } else if (BTYPE == 2) {
+                    handleOneDynamicdHuffmanBlock();
+                } else {
+                    throw new RuntimeException("BTYPE error:" + BTYPE);
+                }
+
+            } while (BFINAL != 1);
+            return outputIdx;
+        }
+
+        private void handleOneDynamicdHuffmanBlock() {
+            //TODO
+            throw new RuntimeException("handleOneDynamicdHuffmanBlock");
+        }
+
+        private void handleOneFixedHuffmanBlock() {
+            while (true) {
+                int code = readOneCodeFixedHuffman();
+                if (code <= 255) {
+                    writeOneByte((byte) code);
+                    l("write literal value:"+code+"(\""+(char)code+"\") "+new String(output,0,outputIdx));
+                } else if (code == 256) {
+                    return;
+                } else {
+                    int len = getLengthByCode(code);
+                    int disCode = readBits(5, false);
+                    int distance = getDisByCode(disCode);
+
+
+                    int start=outputIdx-distance;
+                    int end=Math.min(outputIdx,outputIdx-distance+len);
+                    l("repeat from -"+distance+",count="+len+", "+new String(output,start,end-start));
+
+
+                    for (int i = 0; i < len; i++) {
+                        writeOneByte(output[outputIdx - distance]);
+                    }
+                }
+            }
+        }
+
+        private int getExtraBitsCntByCodeForLen(int code) {
+            if (code >= 257 && code <= 264) {
+                return 0;
+            }
+            if (code >= 265 && code <= 268) {
+                return 1;
+            }
+
+            if (code >= 269 && code <= 272) {
+                return 2;
+            }
+
+            if (code >= 273 && code <= 276) {
+                return 3;
+            }
+            if (code >= 277 && code <= 280) {
+                return 4;
+            }
+
+            if (code >= 281 && code <= 284) {
+                return 5;
+            }
+            throw new RuntimeException("getExtraBitsCntByCodeForLen : " + code);
+        }
+
+
+        private int getExtraBitsCntByCodeForDis(int code) {
+            if (code < 0 || code > 29) {
+                throw new RuntimeException("");
+            }
+            if (code >= 0 && code <= 3) {
+                return 0;
+            }
+            return code / 2 - 1;
+        }
+
+        private int getDisByCode(int code) {
+            int dis = 1;
+            for (int i = 0; i <= 29; i++) {
+                int bitsCnt = getExtraBitsCntByCodeForDis(i);
+                if (i == code) {
+                    return dis + readBits(bitsCnt, false);
+                }
+                dis += (1 << bitsCnt);
+            }
+            throw new RuntimeException("");
+        }
+
+        private int getLengthByCode(int code) {
+            if (code == 285) {
+                return 258;
+            }
+            int len = 3;
+            for (int i = 257; i <= 284; i++) {
+                int bitsCnt = getExtraBitsCntByCodeForLen(i);
+                if (i == code) {
+                    return len + readBits(bitsCnt, false);
+                }
+                len += (1 << bitsCnt);
+            }
+            throw new RuntimeException("getLengthByCode : " + code);
+        }
+
+        private int readOneCodeFixedHuffman() {
+            boolean isLeastSignificantBitFirst = false;
+            int got = readBits(8, isLeastSignificantBitFirst);
+            if (got >= 0b00110000 && got <= 0x10111111) {
+                return got - 0b00110000;
+            }
+            backBits(8);
+
+            got = readBits(9, isLeastSignificantBitFirst);
+            if (got >= 0b110010000 && got <= 0b111111111) {
+                return got - 0b110010000 + 144;
+            }
+            backBits(9);
+
+
+            got = readBits(7, isLeastSignificantBitFirst);
+            if (got >= 0 && got <= 0b0010111) {
+                return got + 256;
+            }
+            backBits(7);
+
+            got = readBits(8, isLeastSignificantBitFirst);
+            if (got >= 0b11000000 && got <= 0b11000111) {
+                return got - 0b11000000 + 280;
+            }
+            throw new RuntimeException("readOneCodeFixedHuffman");
+        }
+
+        private void writeOneByte(byte b) {
+            output[outputIdx++] = b;
+        }
+
+        private void checkComplement(int a, int b) {
+            if ((a | b) != 0xff) {
+                throw new RuntimeException("not Complement!");
+            }
+            if ((a & b) != 0) {
+                throw new RuntimeException("not Complement!");
+            }
+        }
+
+        private void copyNBytes(int n) {
+            System.arraycopy(compressedData, byteIdx, output, outputIdx, n);
+            byteIdx += n;
+            outputIdx += n;
+        }
+
+        private void handleOneUncompressedBlock() {
+            if (bitIdx != 0) {
+                byteIdx++;
+                bitIdx = 0;
+            }
+            int LEN_L = readBits(8, true);
+            int LEN_H = readBits(8, true);
+            int NLEN_L = readBits(8, true);
+            int NLEN_H = readBits(8, true);
+            checkComplement(LEN_L, NLEN_L);
+            checkComplement(LEN_H, NLEN_H);
+            int LEN = (LEN_H << 8) + LEN_L;
+            copyNBytes(LEN);
+        }
+
+    }
+
+
+    static void printBits(byte[] bs, int len, boolean withComma) {
+        System.out.print("[");
+        for (int i = 0; i < len; i++) {
+            int v = 0x80;
+            for (int j = 0; j < 8; j++) {
+                if ((v & bs[i]) != 0) {
+                    System.out.print("1");
+                } else {
+                    System.out.print("0");
+                }
+                v >>= 1;
+            }
+            if (withComma) {
+                System.out.print(",");
+            }
+        }
+        System.out.println("]");
+    }
+
+    static void printBytes(byte[] bs, int len) {
+        System.out.print("[");
+        for (int i = 0; i < len; i++) {
+            System.out.print("" + bs[i] + ",");
+        }
+        System.out.println("]");
+    }
+
+    public static void main(String[] args) throws Throwable {
+        // Encode a String into bytes
+//     String inputString = "blahblahblahblahblahblah";
+        String inputString = "12341234123412341234blahblahblahblahblah";
+
+        byte[] input = inputString.getBytes(StandardCharsets.UTF_8);
+        System.out.println("before compress inputLen=" + input.length);
+        printBits(input, input.length, false);
+        printBits(input, input.length, true);
+        printBytes(input, input.length);
+        System.out.print("\n");
+        // Compress the bytes
+        byte[] output = new byte[100];
+        Deflater compresser = new Deflater();
+        compresser.setInput(input);
+        compresser.finish();
+        int compressedDataLength = compresser.deflate(output);
+        compresser.end();
+
+        System.out.println("after compress compressedDataLength=" + compressedDataLength);
+        printBits(output, compressedDataLength, false);
+        printBits(output, compressedDataLength, true);
+        printBytes(output, compressedDataLength);
+
+        byte[] myResult = new byte[100];
+        MyInflater myInflater = new MyInflater(output, myResult);
+        int myResultLength = myInflater.inflate();
+        l("myResult=" + new String(myResult, 0, myResultLength));
+
+//        output[3]|=0xf0;
+        // Decompress the bytes
+        Inflater decompresser = new Inflater();
+        decompresser.setInput(output, 0, compressedDataLength - 4);//有冗余
+        byte[] result = new byte[100];
+        int resultLength = decompresser.inflate(result);
+        decompresser.end();
+
+        // Decode the bytes into a String
+        String outputString = new String(result, 0, resultLength, StandardCharsets.UTF_8);
+        System.out.println(outputString);
+    }
+}
