@@ -11,12 +11,14 @@ Project information:
 
 package com.example;
 
+import java.io.FileInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
+
 //https://www.rfc-editor.org/rfc/rfc1950
 //https://www.ietf.org/rfc/rfc1951.txt
-DeflateStudy
 public class Main {
     static void l(String msg) {
         System.out.println(msg);
@@ -25,10 +27,12 @@ public class Main {
     static class MyInflater {
         final byte[] compressedData;
         final byte[] output;
+        final boolean hasZlibHead;//CMF and FLG
 
-        MyInflater(byte[] compressedData, byte[] output) {
+        MyInflater(byte[] compressedData, byte[] output, boolean hasZlibHead) {
             this.compressedData = compressedData;
             this.output = output;
+            this.hasZlibHead = hasZlibHead;
         }
 
         int byteIdx, bitIdx;
@@ -77,29 +81,32 @@ public class Main {
             byteIdx = 0;
             bitIdx = 0;
             outputIdx = 0;
-            byte CMF = compressedData[byteIdx++];
-            byte CM = (byte) (CMF & 0xf);
-            boolean isDeflate = (CM == 8);
-            int deflateWindowSize = -1;
-            l("CM=" + CM + (isDeflate ? "(deflate)" : ""));
-            if (isDeflate) {
-                byte CINFO = (byte) ((CMF >> 4) & 0xf);
-                l("CINFO=" + CINFO);
-                deflateWindowSize = 1;
-                for (int i = 0; i < CINFO + 8; i++) {
-                    deflateWindowSize *= 2;
-                }
-                l("deflate window size=" + deflateWindowSize);
-            }
 
-            byte FLG = compressedData[byteIdx++];
-            byte FDICT = (byte) ((FLG >> 5) & 0x1);
-            l("FDICT=" + FDICT);
-            byte FLEVEL = (byte) ((FLG >> 6) & 0x3);
-            l("FLEVEL=" + FLEVEL);
-            if (FDICT != 0) {
-                //TODO
-                throw new RuntimeException("FDICT not supported!");
+            if (hasZlibHead) {
+                byte CMF = compressedData[byteIdx++];
+                byte CM = (byte) (CMF & 0xf);
+                boolean isDeflate = (CM == 8);
+                int deflateWindowSize = -1;
+                l("CM=" + CM + (isDeflate ? "(deflate)" : ""));
+                if (isDeflate) {
+                    byte CINFO = (byte) ((CMF >> 4) & 0xf);
+                    l("CINFO=" + CINFO);
+                    deflateWindowSize = 1;
+                    for (int i = 0; i < CINFO + 8; i++) {
+                        deflateWindowSize *= 2;
+                    }
+                    l("deflate window size=" + deflateWindowSize);
+                }
+
+                byte FLG = compressedData[byteIdx++];
+                byte FDICT = (byte) ((FLG >> 5) & 0x1);
+                l("FDICT=" + FDICT);
+                byte FLEVEL = (byte) ((FLG >> 6) & 0x3);
+                l("FLEVEL=" + FLEVEL);
+                if (FDICT != 0) {
+                    //TODO
+                    throw new RuntimeException("FDICT not supported!");
+                }
             }
 
             int BFINAL;
@@ -131,7 +138,7 @@ public class Main {
                 int code = readOneCodeFixedHuffman();
                 if (code <= 255) {
                     writeOneByte((byte) code);
-                    l("write literal value:"+code+"(\""+(char)code+"\") "+new String(output,0,outputIdx));
+//                    l("write literal value:"+code+"(\""+(char)code+"\") "+new String(output,0,outputIdx));
                 } else if (code == 256) {
                     return;
                 } else {
@@ -140,9 +147,10 @@ public class Main {
                     int distance = getDisByCode(disCode);
 
 
-                    int start=outputIdx-distance;
-                    int end=Math.min(outputIdx,outputIdx-distance+len);
-                    l("repeat from -"+distance+",count="+len+", "+new String(output,start,end-start));
+                    int start = outputIdx - distance;
+                    int end = Math.min(outputIdx, outputIdx - distance + len);
+                    l("start=" + start + ",end=" + end + ",outputIdx=" + outputIdx + ",distance=" + distance + ",len=" + len);
+//                    l("repeat from -"+distance+",count="+len+", "+new String(output,start,end-start));
 
 
                     for (int i = 0; i < len; i++) {
@@ -153,28 +161,13 @@ public class Main {
         }
 
         private int getExtraBitsCntByCodeForLen(int code) {
+            if (code < 257 || code > 284) {
+                throw new RuntimeException("");
+            }
             if (code >= 257 && code <= 264) {
                 return 0;
             }
-            if (code >= 265 && code <= 268) {
-                return 1;
-            }
-
-            if (code >= 269 && code <= 272) {
-                return 2;
-            }
-
-            if (code >= 273 && code <= 276) {
-                return 3;
-            }
-            if (code >= 277 && code <= 280) {
-                return 4;
-            }
-
-            if (code >= 281 && code <= 284) {
-                return 5;
-            }
-            throw new RuntimeException("getExtraBitsCntByCodeForLen : " + code);
+            return (code - 261) / 4;
         }
 
 
@@ -193,7 +186,9 @@ public class Main {
             for (int i = 0; i <= 29; i++) {
                 int bitsCnt = getExtraBitsCntByCodeForDis(i);
                 if (i == code) {
-                    return dis + readBits(bitsCnt, false);
+                    int ret = dis + readBits(bitsCnt, true);
+                    l("getDisByCode code=" + code + ",bitsCnt=" + bitsCnt + "dis=" + dis + ",ret=" + ret);
+                    return ret;
                 }
                 dis += (1 << bitsCnt);
             }
@@ -208,7 +203,7 @@ public class Main {
             for (int i = 257; i <= 284; i++) {
                 int bitsCnt = getExtraBitsCntByCodeForLen(i);
                 if (i == code) {
-                    return len + readBits(bitsCnt, false);
+                    return len + readBits(bitsCnt, true);
                 }
                 len += (1 << bitsCnt);
             }
@@ -217,9 +212,23 @@ public class Main {
 
         private int readOneCodeFixedHuffman() {
             boolean isLeastSignificantBitFirst = false;
-            int got = readBits(8, isLeastSignificantBitFirst);
-            if (got >= 0b00110000 && got <= 0x10111111) {
+            //TODO use huffman tree
+
+            int got = readBits(7, isLeastSignificantBitFirst);
+            if (got >= 0 && got <= 0b0010111) {
+                return got + 256;
+            }
+            backBits(7);
+
+            got = readBits(8, isLeastSignificantBitFirst);
+            if (got >= 0b00110000 && got <= 0b10111111) {
                 return got - 0b00110000;
+            }
+            backBits(8);
+
+            got = readBits(8, isLeastSignificantBitFirst);
+            if (got >= 0b11000000 && got <= 0b11000111) {
+                return got - 0b11000000 + 280;
             }
             backBits(8);
 
@@ -229,17 +238,6 @@ public class Main {
             }
             backBits(9);
 
-
-            got = readBits(7, isLeastSignificantBitFirst);
-            if (got >= 0 && got <= 0b0010111) {
-                return got + 256;
-            }
-            backBits(7);
-
-            got = readBits(8, isLeastSignificantBitFirst);
-            if (got >= 0b11000000 && got <= 0b11000111) {
-                return got - 0b11000000 + 280;
-            }
             throw new RuntimeException("readOneCodeFixedHuffman");
         }
 
@@ -308,10 +306,56 @@ public class Main {
     }
 
     public static void main(String[] args) throws Throwable {
-        // Encode a String into bytes
+//        selfTest();
+        zipTest();
+    }
+
+    static void zipTest() throws Throwable {
+        FileInputStream fis = new FileInputStream("xx.zip");
+        long totalLen = fis.available();
+        byte[] apkData = new byte[(int) totalLen];
+        if (totalLen != fis.read(apkData)) {
+            throw new RuntimeException("");
+        }
+        fis.close();
+        for (int idx = 0; idx < totalLen; ) {
+            int fileNameLenL = apkData[idx + 0x1a] & 0xff;
+            int fileNameLenH = apkData[idx + 0x1a + 1] & 0xff;
+            int fileNameLen = (fileNameLenH << 8) + fileNameLenL;
+            String fileName = new String(apkData, idx + 0x1e, fileNameLen);
+
+            int compressedLenA = apkData[idx + 0x12] & 0xff;
+            int compressedLenB = apkData[idx + 0x12 + 1] & 0xff;
+            int compressedLenC = apkData[idx + 0x12 + 2] & 0xff;
+            int compressedLenD = apkData[idx + 0x12 + 3] & 0xff;
+            int compressedLen = (compressedLenD << 24) + (compressedLenC << 16) + (compressedLenB << 8) + compressedLenA;
+
+            int extraFieldLenL = apkData[idx + 0x1c] & 0xff;
+            int extraFieldLenH = apkData[idx + 0x1c + 1] & 0xff;
+            int extraFieldLen = (extraFieldLenH << 8) + extraFieldLenL;
+
+            int compressTypeL = apkData[idx + 0x8] & 0xff;
+            int compressTypeH = apkData[idx + 0x8 + 1] & 0xff;
+            int compressType = (compressTypeH << 8) + compressTypeL;
+
+            if (compressType == 8) {
+                l(fileName + "," + fileNameLen + "," + compressType);
+                byte[] out = new byte[compressedLen * 3];
+                int start = idx + 0x1e + fileNameLen + extraFieldLen;
+                int end = start + compressedLen;
+                new MyInflater(Arrays.copyOfRange(apkData, start, end), out, false).inflate();
+//                    Inflater decompresser = new Inflater();
+//                    decompresser.setInput(Arrays.copyOfRange(apkData, start, end));
+//                    decompresser.inflate(out);
+            }
+            idx += 0x1e + compressedLen + fileNameLen + extraFieldLen;
+        }
+    }
+
+    static void selfTest() throws Throwable {
+// Encode a String into bytes
 //     String inputString = "blahblahblahblahblahblah";
         String inputString = "12341234123412341234blahblahblahblahblah";
-
         byte[] input = inputString.getBytes(StandardCharsets.UTF_8);
         System.out.println("before compress inputLen=" + input.length);
         printBits(input, input.length, false);
@@ -332,7 +376,7 @@ public class Main {
         printBytes(output, compressedDataLength);
 
         byte[] myResult = new byte[100];
-        MyInflater myInflater = new MyInflater(output, myResult);
+        MyInflater myInflater = new MyInflater(output, myResult, true);
         int myResultLength = myInflater.inflate();
         l("myResult=" + new String(myResult, 0, myResultLength));
 
@@ -349,3 +393,4 @@ public class Main {
         System.out.println(outputString);
     }
 }
+
